@@ -1,5 +1,5 @@
 ---
-name: CFCardFactory Access System
+name: VeryFlow Access System
 overview: Web 3.0-based access control system with Next.js portal, Go backend/gateway, PostgreSQL, OSDP-based door kit, and EVM-compatible blockchain layer for tamper-proof audit trails.
 todos:
   - id: setup-monorepo
@@ -35,7 +35,10 @@ todos:
 isProject: false
 ---
 
-# CFCardFactory Access Control System - Architecture Plan
+# VeryFlow Access Control System - Architecture Plan
+
+> **Product Name:** VeryFlow (access control platform)
+> **Company/Repository:** CF Card Factory (CFCardFactory)
 
 ## System Overview
 
@@ -89,12 +92,17 @@ flowchart TB
 apps/portal/
 ├── app/                    # Next.js App Router
 │   ├── (auth)/            # Auth-protected routes
-│   │   ├── dashboard/
-│   │   ├── employees/
-│   │   ├── cards/
-│   │   ├── doors/
-│   │   ├── access-logs/
-│   │   └── settings/
+│   │   ├── dashboard/     # Status overview
+│   │   ├── sites/         # Sites management
+│   │   ├── gateways/      # Gateway management + QR provisioning
+│   │   ├── doors/         # Doors and controllers
+│   │   ├── employees/     # Employee management
+│   │   ├── groups/        # Groups and schedules
+│   │   ├── cards/         # Card lifecycle
+│   │   ├── access-logs/   # Access events
+│   │   ├── proofs/        # Proof records + export
+│   │   ├── billing/       # Active cards + export
+│   │   └── settings/      # Tenant settings
 │   └── api/               # API Routes (BFF pattern)
 ├── components/
 │   ├── ui/                # Shadcn/UI components
@@ -108,9 +116,18 @@ apps/portal/
 
 - Create/import/deactivate employees
 - Assign/block/replace cards
-- Simple roles and time schedules
+- Groups and time schedules (predefined templates only)
 - View/filter access events
 - Audit log for admin actions
+
+**New Features per Pflichtenheft:**
+
+- **Gateway QR Provisioning:** Generate provisioning token, display QR code, gateway scans and registers
+- **Status Dashboard:** Gateway online/offline status, last sync time, event queue size, door availability
+- **Billing Export:** Count of active cards per period, CSV/JSON export for invoicing
+- **Proof Export:** Filterable list of proof records, blockchain TX hash for verification
+
+**Constraint:** No free rule engine. Only predefined access templates (Group → Door + Schedule).
 
 ### 2. Backend API (Go on AWS/GCP)
 
@@ -154,6 +171,27 @@ services/backend/
 - `GET /api/v1/sync/blocklist` - Blocklist for gateway
 - `POST /api/v1/events/batch` - Event batch from gateway
 
+**Gateway Management Endpoints:**
+
+- `POST /api/v1/gateways/provision` - Generate provisioning token + QR data
+- `POST /api/v1/gateways/register` - Gateway self-registration (called by gateway)
+- `GET /api/v1/gateways` - List gateways with status
+- `GET /api/v1/gateways/{id}/status` - Detailed gateway status + monitoring
+
+**Group and Schedule Endpoints:**
+
+- `POST /api/v1/groups` - Create group
+- `POST /api/v1/groups/{id}/members` - Add employee to group
+- `POST /api/v1/groups/{id}/doors` - Grant group access to door
+- `POST /api/v1/schedules` - Create schedule (predefined templates)
+
+**Billing and Export Endpoints:**
+
+- `GET /api/v1/billing/active-cards` - Count active cards for period
+- `GET /api/v1/billing/export` - Export billing data (CSV/JSON)
+- `GET /api/v1/proofs` - List proof records
+- `GET /api/v1/proofs/export` - Export proofs (CSV/JSON)
+
 ### 3. Gateway (Go on Raspberry Pi / Industrial)
 
 **Structure:**
@@ -162,6 +200,9 @@ services/backend/
 services/gateway/
 ├── cmd/gateway/          # Main entry point
 ├── internal/
+│   ├── provision/       # QR-based provisioning
+│   │   ├── qr.go        # QR code scanning
+│   │   └── register.go  # Backend registration
 │   ├── osdp/            # OSDP Secure Channel client
 │   │   ├── connection.go
 │   │   ├── secure.go    # SCS encryption
@@ -177,12 +218,25 @@ services/gateway/
 │   │   ├── pull.go      # Fetch rules/blocklist
 │   │   ├── push.go      # Upload events
 │   │   └── offline.go   # Offline queue
+│   ├── monitoring/      # Status reporting
+│   │   ├── status.go    # Online status, queue size
+│   │   └── diagnostics.go
 │   ├── store/           # SQLite for offline cache
 │   └── hardware/        # GPIO/relay control
 ├── pkg/
 │   └── crypto/          # Key derivation, secure storage
 └── configs/             # Hardware profiles
 ```
+
+**Gateway Functions (per Pflichtenheft):**
+
+- Provisioning via QR code (scan → register → receive certificate)
+- Rule synchronization from backend
+- Blocklist management (local cache)
+- Offline decision engine
+- Event buffering (local storage when offline)
+- Monitoring data delivery (status, last sync, queue size)
+- Signed updates only
 
 **Critical Requirements:**
 
@@ -240,8 +294,13 @@ struct RulesAnchor {
 ```mermaid
 erDiagram
     tenants ||--o{ sites : has
+    tenants ||--o{ gateways : owns
     tenants ||--o{ employees : has
     tenants ||--o{ cards : owns
+    tenants ||--o{ groups : defines
+    tenants ||--o{ schedules : defines
+    tenants ||--o{ rule_versions : publishes
+    tenants ||--o{ proof_records : has
     tenants {
         uuid id PK
         string name
@@ -251,6 +310,7 @@ erDiagram
     }
 
     sites ||--o{ doors : has
+    sites ||--o{ gateways : deployed_at
     sites {
         uuid id PK
         uuid tenant_id FK
@@ -258,24 +318,82 @@ erDiagram
         string timezone
     }
 
+    gateways ||--o{ controllers : manages
+    gateways {
+        uuid id PK
+        uuid tenant_id FK
+        uuid site_id FK
+        string name
+        string device_id
+        string provisioning_token
+        timestamp provisioned_at
+        timestamp last_sync
+        string status
+        int event_queue_size
+        jsonb monitoring_data
+    }
+
+    controllers ||--o{ doors : controls
+    controllers {
+        uuid id PK
+        uuid gateway_id FK
+        string name
+        string type
+        string osdp_address
+        string status
+    }
+
     doors ||--o{ access_events : logs
+    doors ||--o{ group_door_access : grants
     doors {
         uuid id PK
         uuid site_id FK
-        uuid gateway_id FK
+        uuid controller_id FK
         string name
-        jsonb schedule
+        string status
     }
 
+    schedules ||--o{ groups : applies_to
+    schedules {
+        uuid id PK
+        uuid tenant_id FK
+        string name
+        jsonb time_windows
+        jsonb holidays
+    }
+
+    groups ||--o{ group_memberships : has
+    groups ||--o{ group_door_access : grants
+    groups {
+        uuid id PK
+        uuid tenant_id FK
+        string name
+        uuid schedule_id FK
+    }
+
+    employees ||--o{ group_memberships : member_of
     employees ||--o{ card_assignments : has
     employees {
         uuid id PK
         uuid tenant_id FK
         string employee_number
         string name_encrypted
-        uuid role_id FK
         date exit_date
         bool active
+    }
+
+    group_memberships {
+        uuid id PK
+        uuid group_id FK
+        uuid employee_id FK
+        timestamp added_at
+    }
+
+    group_door_access {
+        uuid id PK
+        uuid group_id FK
+        uuid door_id FK
+        timestamp granted_at
     }
 
     cards ||--o{ card_assignments : assigned
@@ -298,15 +416,37 @@ erDiagram
         string blockchain_tx_hash
     }
 
+    rule_versions {
+        uuid id PK
+        uuid tenant_id FK
+        int version_number
+        bytea snapshot_hash
+        jsonb rules_data
+        timestamp created_at
+        timestamp activated_at
+        string blockchain_tx_hash
+    }
+
     access_events {
         uuid id PK
         uuid door_id FK
         uuid card_id FK
+        uuid gateway_id FK
         timestamp event_time
         string event_type
         bool granted
         string denial_reason
         bool synced
+    }
+
+    proof_records {
+        uuid id PK
+        uuid tenant_id FK
+        string proof_type
+        string reference_id
+        string blockchain_tx_hash
+        timestamp created_at
+        jsonb metadata
     }
 
     audit_logs {
@@ -500,3 +640,66 @@ CFCardFactory/
 - **Gateway Auth:** mTLS to backend, device certificates
 - **Updates:** Code-signed gateway updates
 - **Audit:** All admin actions logged, event batches anchored on-chain
+
+## Monitoring and Operations
+
+| Metric | Description | Source |
+|--------|-------------|--------|
+| Gateway Online Status | Connected / Disconnected | Gateway heartbeat |
+| Last Synchronization | Timestamp of last successful sync | Gateway reports |
+| Door Status | Available / Not available | Controller status |
+| Event Queue Size | Number of buffered events | Gateway local store |
+| Basic Diagnostics Export | JSON/CSV diagnostic data | Gateway + Backend |
+
+**Monitoring Endpoints:**
+
+- `GET /api/v1/gateways/{id}/status` - Real-time gateway status
+- `GET /api/v1/monitoring/overview` - Tenant-wide status dashboard
+- `GET /api/v1/monitoring/diagnostics` - Export diagnostic data
+
+## Design Constraints
+
+### Rule Engine Limitation
+
+> **No free rule engine. Only predefined templates.**
+
+The system deliberately does not support arbitrary rule definitions. Access control is limited to:
+
+- Group → Door assignments
+- Schedule → Group assignments
+- Time window definitions
+
+This constraint ensures:
+- Predictable behavior for auditing
+- Simpler offline decision logic
+- Reduced attack surface
+- Easier compliance verification
+
+### Web3 Layer Boundaries
+
+The blockchain layer is strictly limited to:
+
+| Allowed | Not Allowed |
+|---------|-------------|
+| Card issued event | Real-time access checks |
+| Card revoked event | Per-access transactions |
+| Rules version activated | Storing personal data |
+| Event batch hash anchor | Real-time authorization |
+
+**Principle:** Web3 is bookkeeping and notary, not door opener.
+
+## Acceptance Criteria MVP
+
+| Nr. | Criterion | Verification |
+|-----|-----------|--------------|
+| 1 | Access works offline | Disconnect gateway from network, verify access still granted |
+| 2 | Blocked card cannot open door | Revoke card, verify immediate denial |
+| 3 | Copied UID cannot open door | Present cloned UID without crypto auth, verify denial |
+| 4 | Rules are synchronized | Change rule in portal, verify gateway receives update |
+| 5 | Proof entries are created | Issue/revoke card, verify blockchain transaction |
+| 6 | No on-chain costs for access | Perform 100 accesses, verify zero blockchain transactions |
+
+## References
+
+- **Pflichtenheft:** [PFLICHTENHEFT_MVP.md](../requirements/PFLICHTENHEFT_MVP.md)
+- **German Version:** [ARCHITECTURE_PLAN_DE.md](./ARCHITECTURE_PLAN_DE.md)
