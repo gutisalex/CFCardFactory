@@ -6,7 +6,7 @@ todos:
     content: Set up monorepo structure with Turborepo, create project scaffold
     status: pending
   - id: portal-scaffold
-    content: Next.js portal with App Router, Shadcn/UI, Auth0/Clerk base integration
+    content: Next.js portal with App Router, Shadcn/UI, Clerk auth (MVP); WorkOS option later
     status: pending
   - id: backend-core
     content: "Go Backend: API structure, PostgreSQL schema, tenant middleware"
@@ -109,7 +109,7 @@ apps/portal/
 │   └── features/          # Feature-specific components
 └── lib/
     ├── api-client.ts      # Backend API client
-    └── auth.ts            # Auth0/Clerk integration
+    └── auth.ts            # Clerk integration (MVP); WorkOS for enterprise later
 ```
 
 **MVP Features (Phase 2):**
@@ -532,6 +532,50 @@ sequenceDiagram
     Cloud->>Chain: Anchor batch hash (daily)
 ```
 
+## Offline Operating Model and Connectivity
+
+VeryFlow is **offline-first at the decision point**. No permanent cloud connection is required for access decisions. The following principles are part of the formal architecture.
+
+### No Permanent Online Required
+
+- Access decisions (door open, card verification, cryptography) happen **entirely locally** in the gateway.
+- The internet is **not** required for opening a door.
+- **Periodic synchronisation** is part of the security model: gateways must sync regularly (not necessarily constantly) to receive revocations, new permissions, and rule changes. No mandatory LTE, VPN, or special link at the site.
+
+### TTL as Core Mechanism
+
+- Card permissions have a **time-to-live (TTL)**. **Default: 1 hour.**
+- Rationale: Gateways are assumed to be online in practice. TTL is primarily a **safety net** for real offline situations, not the normal mode. Revocations and role changes should take effect quickly (within the sync window), not hours later.
+- Offline duration is **controlled by TTL**, not unbounded.
+
+### Sync Logic
+
+- Gateway maintains an **active connection** to the backend; **push is preferred**.
+- **Fallback:** Polling every **60 seconds** if push is unavailable.
+- On **revocation or rule change**, the backend sends an event **immediately**; gateway **invalidates local cache immediately** and does not wait for the next poll.
+
+### Defined Offline Operating States
+
+The system models offline behaviour explicitly:
+
+| State | Description | Access behaviour |
+|-------|-------------|------------------|
+| **Online** | Gateway in contact with backend | Normal operation; push/poll sync runs. |
+| **Grace Offline** | Gateway offline; TTL of permissions not yet expired | Cache remains valid; access allowed for cards still within TTL. |
+| **Restricted Offline** | Gateway offline; TTL expired | **No hard fail-closed.** Operation continues with a clearly defined **minimal-rights profile** (e.g. Admin, Technik, Security). All access events are logged as **security events**. Goal: maximum practicality without losing security assurance. |
+| **Fail Secure** | Configurable per door | e.g. door remains closed when in doubt. |
+
+**Implementation requirement:** Do not build logic that assumes permanent cloud reachability or unlimited offline operation. Offline is allowed but intentionally bounded; this is product security, not only a technical detail.
+
+### Immediate Revocation (Sofortsperre) – Core Feature
+
+Immediate revocation is a **core product feature**, not optional:
+
+- **Portal:** Admin can trigger immediate lock on **card**, **person**, **door group**, or **site**.
+- **Backend:** Emits a **push event** to all relevant gateways.
+- **Gateway:** **Immediate cache invalidation**; no wait for next poll.
+- **UI:** Shows **gateway status** for the revocation: confirmed, pending, or offline (so the admin sees which gateways have applied the lock).
+
 ## Development Phases
 
 ### Phase 1: Lab Prototype (4-6 weeks)
@@ -566,7 +610,7 @@ sequenceDiagram
 - Sync protocol: rules pull, blocklist pull, event push
 - Revocation push (immediate blocking)
 - Portal MVP: employees, cards, roles, schedules, logs
-- Auth0/Clerk integration
+- Clerk integration (MVP); WorkOS for enterprise later
 - Event batch anchoring (daily)
 - Signed gateway updates
 - Monitoring/alerting (basic)
@@ -621,7 +665,7 @@ CFCardFactory/
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
 | Portal | Next.js 14+, App Router, Shadcn/UI | Fast development, good DX |
-| Auth | Auth0 or Clerk | Managed, secure, quick integration |
+| Auth | Clerk (MVP); WorkOS for enterprise; no Keycloak | Managed, Next.js–friendly; enterprise SSO later |
 | Backend | Go 1.22+, Chi Router | Performance, maintainability |
 | Database | PostgreSQL 16 | Robust, JSON support, proven |
 | Event Store | PostgreSQL (partitioned) | Simplicity, later optionally TimescaleDB |
@@ -636,7 +680,7 @@ CFCardFactory/
 - **Card Authentication:** DESFire EV3 AES-128 challenge-response, no UID auth
 - **OSDP Secure Channel:** Encrypted reader communication
 - **Key Management:** Master key per tenant in KMS, key diversification per card
-- **API Auth:** JWT via Auth0/Clerk, tenant isolation at DB level
+- **API Auth:** JWT via Clerk (MVP), tenant isolation at DB level
 - **Gateway Auth:** mTLS to backend, device certificates
 - **Updates:** Code-signed gateway updates
 - **Audit:** All admin actions logged, event batches anchored on-chain

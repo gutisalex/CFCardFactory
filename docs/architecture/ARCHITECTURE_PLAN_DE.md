@@ -12,7 +12,7 @@ Web 3.0-gestütztes Zutrittssystem mit Next.js Portal, Go Backend/Gateway, Postg
 | ID | Aufgabe | Status |
 |----|---------|--------|
 | setup-monorepo | Monorepo-Struktur mit Turborepo aufsetzen, Projektgrundgerüst erstellen | Ausstehend |
-| portal-scaffold | Next.js Portal mit App Router, Shadcn/UI, Auth0/Clerk Grundintegration | Ausstehend |
+| portal-scaffold | Next.js Portal mit App Router, Shadcn/UI, Clerk Auth (MVP); WorkOS optional später | Ausstehend |
 | backend-core | Go Backend: API-Grundstruktur, PostgreSQL-Schema, Tenant-Middleware | Ausstehend |
 | gateway-osdp | Gateway: OSDP Secure Channel Implementation, Reader-Kommunikation | Ausstehend |
 | gateway-desfire | Gateway: DESFire EV3 Challenge-Response, Key Derivation | Ausstehend |
@@ -95,7 +95,7 @@ apps/portal/
 │   └── features/          # Feature-spezifische Komponenten
 └── lib/
     ├── api-client.ts      # Backend API Client
-    └── auth.ts            # Auth0/Clerk Integration
+    └── auth.ts            # Clerk-Integration (MVP); WorkOS für Enterprise später
 ```
 
 **MVP-Funktionen (Phase 2):**
@@ -532,6 +532,52 @@ sequenceDiagram
 
 ---
 
+## Offline-Betriebsmodell und Konnektivität
+
+VeryFlow ist **im Entscheidungszeitpunkt Offline-First**. Für Zutrittsentscheidungen ist **kein dauerhafter Cloud-Zugang** erforderlich. Die folgenden Prinzipien sind Teil der formalen Architektur.
+
+### Kein permanenter Online-Zugang
+
+- Zutrittsentscheidungen (Tür öffnen, Kartenprüfung, Kryptografie) erfolgen **vollständig lokal** im Gateway.
+- Das Internet wird **nicht** zum Öffnen der Tür benötigt.
+- **Periodische Synchronisation** ist Teil des Sicherheitsmodells: Gateways müssen regelmäßig (nicht zwingend dauerhaft) online sein, um Sperrungen, neue Berechtigungen und Regeländerungen zu erhalten. Kein Zwang zu LTE, VPN oder Spezialanbindung am Standort.
+
+### TTL als Kernmechanismus
+
+- Kartenberechtigungen haben eine **Time-to-Live (TTL)**. **Standard: 1 Stunde.**
+- Gedanke: Gateways sind in der Praxis fast immer online. TTL ist primär ein **Sicherheitszaun** für echte Offline-Situationen, nicht der Normalbetrieb. Sperrungen und Rollenwechsel sollen schnell wirksam werden, nicht erst nach Stunden.
+- Die Offline-Zeit ist **durch TTL kontrolliert**, nicht unbegrenzt.
+
+### Sync-Logik
+
+- Gateway hält eine **aktive Verbindung** zum Backend; **Push bevorzugt**.
+- **Fallback:** Polling alle **60 Sekunden**, wenn Push nicht verfügbar ist.
+- Bei **Sperrung oder Regeländerung** sendet das Backend ein Event **sofort**; das Gateway **invalidiert den lokalen Cache unmittelbar** und wartet nicht auf den nächsten Poll.
+
+### Definierte Offline-Betriebszustände
+
+Das System modelliert Offline-Verhalten explizit:
+
+| Zustand | Beschreibung | Zutrittsverhalten |
+|---------|--------------|-------------------|
+| **Online** | Gateway im Kontakt mit Backend | Normalbetrieb; Push/Poll-Sync läuft. |
+| **Grace Offline** | Gateway offline; TTL der Berechtigungen noch nicht abgelaufen | Cache bleibt gültig; Zutritt für Karten innerhalb der TTL. |
+| **Restricted Offline** | Gateway offline; TTL abgelaufen | **Kein hartes Fail-Closed.** Weiterbetrieb mit klar definiertem **Minimalrechte-Profil** (z.B. Admin, Technik, Security). Alle Zutrittsereignisse werden als **Security Events** geloggt. Ziel: maximale Praxistauglichkeit ohne Sicherheitsgefühl zu verlieren. |
+| **Fail Secure** | Pro Tür konfigurierbar | z.B. Tür bleibt bei Unsicherheit geschlossen. |
+
+**Implementierungsanforderung:** Es darf keine Logik gebaut werden, die dauerhafte Cloud-Erreichbarkeit oder unbegrenzte Offline-Toleranz voraussetzt. Offline ist erlaubt, aber bewusst begrenzt – das ist Produktsicherheit, nicht nur technisches Detail.
+
+### Sofortsperre (Immediate Revocation) – Kernfeature
+
+Die Sofortsperre ist ein **Kernfeature des Produkts**, kein Nice-to-have:
+
+- **Portal:** Admin kann Sofortsperre auslösen für **Karte**, **Person**, **Türgruppe** oder **Standort**.
+- **Backend:** Sendet **Push-Event** an alle betroffenen Gateways.
+- **Gateway:** **Sofortige Cache-Invalidierung**; kein Warten auf den nächsten Poll.
+- **UI:** Zeigt den **Gateway-Status** zur Sperre: bestätigt, ausstehend oder offline (damit der Admin sieht, welche Gateways die Sperre bereits übernommen haben).
+
+---
+
 ## Entwicklungsphasen
 
 ### Phase 1: Lab Prototype (4-6 Wochen)
@@ -568,7 +614,7 @@ sequenceDiagram
 - Sync-Protokoll: Rules Pull, Blocklist Pull, Event Push
 - Revocation Push (sofortige Sperrung)
 - Portal MVP: Mitarbeiter, Karten, Rollen, Zeitpläne, Logs
-- Auth0/Clerk Integration
+- Clerk-Integration (MVP); WorkOS für Enterprise später
 - Event Batch Anchoring (täglich)
 - Gateway-Updates signiert
 - Monitoring/Alerting (Basis)
@@ -629,7 +675,7 @@ CFCardFactory/
 | Komponente | Technologie | Begründung |
 |------------|-------------|------------|
 | Portal | Next.js 14+, App Router, Shadcn/UI | Schnelle Entwicklung, gute DX |
-| Auth | Auth0 oder Clerk | Managed, sicher, schnell integriert |
+| Auth | Clerk (MVP); WorkOS für Enterprise; kein Keycloak | Managed, Next.js-freundlich; Enterprise-SSO später |
 | Backend | Go 1.22+, Chi Router | Performance, Wartbarkeit |
 | Datenbank | PostgreSQL 16 | Robust, JSON Support, bewährt |
 | Event Store | PostgreSQL (partitioniert) | Einfachheit, später ggf. TimescaleDB |
@@ -646,7 +692,7 @@ CFCardFactory/
 - **Karten-Authentifizierung:** DESFire EV3 AES-128 Challenge-Response, keine UID-Auth
 - **OSDP Secure Channel:** Verschlüsselte Reader-Kommunikation
 - **Key Management:** Master Key pro Tenant in KMS, Key Diversification pro Karte
-- **API Auth:** JWT via Auth0/Clerk, Tenant-Isolation auf DB-Ebene
+- **API Auth:** JWT via Clerk (MVP), Tenant-Isolation auf DB-Ebene
 - **Gateway Auth:** mTLS zum Backend, Geräte-Zertifikate
 - **Updates:** Code-signierte Gateway-Updates
 - **Audit:** Alle Admin-Aktionen geloggt, Event-Batches On-Chain verankert
@@ -678,7 +724,7 @@ Server-First Ansatz mit strategischen Client Components:
 | Page Layouts, Navigation | Server Components | Statische Struktur |
 | Datentabellen | Server Components + Streaming | Initiale Daten server-seitig |
 | Formulare | Client Components | Interaktive Eingabe, Validierung |
-| Auth State | Client Component | Auth0/Clerk benötigt Client-Session |
+| Auth State | Client Component | Clerk benötigt Client-Session |
 | Filter/Suche | Client Components | Echtzeit-Interaktion |
 
 ---

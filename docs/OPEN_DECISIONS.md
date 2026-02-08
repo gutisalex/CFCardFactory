@@ -1,24 +1,91 @@
 # VeryFlow - Offene Entscheidungen vor Umsetzung
 
-**Status:** Klärung erforderlich vor Entwicklungsstart
-**Stand:** Januar 2026
+**Status:** Entscheidungen getroffen (MVP)
+**Stand:** Februar 2026
 
 ---
 
 ## Zusammenfassung
 
-Die Architektur steht. Die offenen Punkte sind keine Richtungsfragen mehr, sondern **Konkretisierung und Auswahl** - vor allem bei Hardware und Sicherheitsprozessen.
+Die Architektur steht. Die **Hauptentscheidungen sind getroffen**; die folgenden Abschnitte dokumentieren die getroffenen Optionen und die verbleibenden, nicht blockierenden Punkte.
+
+---
+
+## Entscheidungen getroffen (Februar 2026)
+
+| Thema | Entscheidung |
+|-------|--------------|
+| **Transparent Mode (Kardinal)** | Reader muss APDUs durch OSDP durchreichen können (Transparent Mode). Kein Reader-Kauf (inkl. Signo 20) vor **Transparent Mode Proof** in Woche 1. |
+| **Hardware-Profile** | Zwei Referenzprofile: **P1** „Open Transparent Pilot“ = Reader mit Transparent/Direct Auth (z.B. STid Architect transparent), Kauf erst nach Proof. **P2** „Enterprise Trust Anchor“ = HID Signo nur nach Transparent-Mode-Verifikation. Controller optional, nur I/O oder entfällt. |
+| **Integrationsansatz** | Gateway ist der einzige Decision Point. Controller nur I/O oder weglassen. Architektur: Reader (OSDP SC) ↔ Gateway (Decision + Crypto) ↔ Relais/Türöffner. |
+| **Personalisierung** | Zentral bei CF Card Factory. Standard DESFire EV3/AES, keine HID-SIO- oder Vendor-Credential-Abhängigkeit. Kunde aktiviert nur im Portal. |
+| **Key Governance** | VeryFlow-managed Keys über Cloud KMS (AWS oder GCP, Region EU). Rotation manuell jährlich; Dual-Key-Support im Gateway für Übergangszeit. Runbooks Pflichtartefakt für Pilot. |
+| **Pilot-Rahmen** | 2 Türen, 15 Karten, 1 Gateway, 6 Wochen, Offline-Test 48h. |
+| **Abrechnung** | High Water Mark; aktiv = mindestens ein Tag Status „aktiv“ im Monat. Export CSV + JSON. Keine Rechnungsstellung in der Plattform. |
+| **Offline-Betrieb** | Kein permanenter Online-Zugang erforderlich. Periodische Synchronisation für Sperrungen, neue Berechtigungen, Regeländerungen. TTL begrenzt Offline-Zeit; explizite Betriebszustände (Online, Grace Offline, Restricted Offline, Fail Secure) – siehe Architekturplan. |
+| **TTL-Standard** | **1 Stunde** als Default. Gateways sind in der Praxis fast immer online; TTL ist primär Sicherheitszaun für echte Offline-Situationen. Änderungen (Sperrungen, Rollenwechsel) sollen sich schnell anfühlen. |
+| **Sync-Logik** | Gateway hält aktive Verbindung zum Backend, **Push bevorzugt**. Fallback: Polling alle 60 Sekunden. Bei Sperrung/Regeländerung sofort Push-Event; Gateway invalidiert lokalen Cache unmittelbar. |
+| **Offline nach TTL** | Nach TTL-Ablauf **kein** hartes Fail-Closed. Weiterbetrieb mit klar definiertem **Minimalrechte-Profil** (z.B. Admin, Technik, Security). Alle Events als Security Events loggen. Ziel: maximale Praxistauglichkeit ohne Sicherheitsgefühl zu verlieren. |
+| **Sofortsperre** | **Kernfeature:** Sofortsperre im Portal (Karte, Person, Türgruppe, Standort). Push an Gateways, sofortige Cache-Invalidierung. UI zeigt Gateway-Status (bestätigt, ausstehend, offline). |
+| **Auth-Provider** | **MVP: Clerk.** WorkOS als Option für spätere Enterprise-Anforderungen. **Keycloak nicht.** |
+
+---
+
+## Weitere getroffene Entscheidungen (Sync, Offline, Sofortsperre, Auth)
+
+### TTL Default: 1 Stunde
+
+**Gedanke:** Gateways sind in der Praxis fast immer online. TTL ist primär ein Sicherheitszaun für echte Offline-Situationen, nicht der Normalbetrieb. Änderungen wie Sperrungen oder Rollenwechsel sollen sich schnell anfühlen und nicht erst Stunden später wirksam werden.
+
+### Sync-Logik
+
+- Gateway hält eine aktive Verbindung zum Backend; **Push bevorzugt**.
+- Fallback: Polling alle 60 Sekunden.
+- Bei Sperrung oder Regeländerung wird ein Revocation-Event **sofort gepusht**.
+- Gateway invalidiert den lokalen Cache **unmittelbar**.
+
+### Offline-Verhalten
+
+Wenn das Gateway offline ist:
+
+- Cache bleibt bis TTL-Ablauf nutzbar.
+- Nach TTL-Ablauf: **kein hartes Fail-Closed.** Stattdessen Weiterbetrieb mit einem klar definierten **Minimalrechte-Profil** (z.B. Admin, Technik, Security).
+- Alle Events werden als **Security Events** geloggt.
+- **Ziel:** Maximale Praxistauglichkeit ohne Sicherheitsgefühl zu verlieren.
+
+### Sofortsperre (Shooter)
+
+**Kernfeature, kein Nice-to-have.**
+
+- Sperre im Portal auf **Karte, Person, Türgruppe oder Standort**.
+- Push-Event an Gateways.
+- **Sofortige Cache-Invalidierung** auf dem Gateway.
+- UI zeigt **Gateway-Status:** bestätigt, ausstehend, offline.
+
+### Auth-Provider
+
+- **MVP:** **Clerk** verwenden.
+- **WorkOS** als Option für spätere Enterprise-Anforderungen (z.B. SSO, SCIM).
+- **Keycloak:** bitte nicht.
 
 ---
 
 ## 1. Referenzhardware final festlegen
 
-### Offene Auswahl
+### Entscheidung: Zwei Referenzprofile, Transparent Mode zuerst
+
+| Komponente | Status | Entscheidung |
+|------------|--------|--------------|
+| Controller | **Entschieden** | Optional, nur Relais/I/O. Kein „intelligentes“ Panel. |
+| Reader P1 (MVP) | **Entschieden** | Reader mit nachweislicher Transparent/Direct-Auth-Unterstützung (z.B. STid Architect transparent). Kauf **erst nach** Transparent Mode Proof. |
+| Reader P2 (später) | **Bedingt** | HID Signo als Enterprise-Profil, nur nach Verifikation von Transparent Mode in unserer Konfiguration. |
+
+### Historische Optionen (vor Entscheidung)
 
 | Komponente | Status | Optionen |
 |------------|--------|----------|
-| Controller-Modell | **Offen** | z.B. HID Mercury, ASSA ABLOY, Axis |
-| OSDP-Reader-Modell | **Offen** | z.B. HID Signo 20, STid Architect |
+| Controller-Modell | (ersetzt durch oben) | z.B. HID Mercury, ASSA ABLOY, Axis |
+| OSDP-Reader-Modell | (ersetzt durch oben) | z.B. HID Signo 20, STid Architect |
 
 ### Davon abhängig
 
@@ -540,21 +607,23 @@ tenant_id,tenant_name,billing_month,active_cards,unit_price,total
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  WOCHE 1: Hardware-Entscheidung                             │
+│  WOCHE 1: Transparent Mode Proof (Kardinal)                 │
 │                                                             │
-│  □ Referenz-Kit bestellen (HID Signo + Mercury)             │
-│  □ DESFire EV3 Karten bestellen                             │
-│  □ Raspberry Pi 4 + Zubehör bestellen                       │
+│  □ Reader auswählen, der Transparent/Direct Auth nachweislich│
+│    kann (Profil P1)                                         │
+│  □ Minimaler OSDP-Stack am Gateway                          │
+│  □ APDU-Roundtrip zur Karte nachweisen                      │
+│  □ Erst danach: P1-Reader-Kauf, ggf. DESFire EV3 Karten     │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  WOCHE 2-3: Hardware-Test + Integration entscheiden         │
+│  WOCHE 2-3: Hardware-Test + Integration                     │
 │                                                             │
-│  □ OSDP-Kommunikation testen                                │
+│  □ OSDP Secure Channel + Transparent Mode im Gateway         │
 │  □ DESFire Challenge-Response testen                        │
 │  □ Latenz messen                                            │
-│  □ Entscheidung: Gateway als Logik-Layer bestätigen         │
+│  □ Gateway als einziger Decision Point validieren           │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
                             ▼
@@ -590,15 +659,15 @@ tenant_id,tenant_name,billing_month,active_cards,unit_price,total
 
 ### Entscheidungs-Checkliste
 
-| # | Entscheidung | Empfehlung | Status |
-|---|--------------|------------|--------|
-| 1 | Controller-Modell | HID Mercury LP1502 | ☐ Offen |
-| 2 | Reader-Modell | HID Signo 20 | ☐ Offen |
-| 3 | Integrationsansatz | Gateway als Logik-Layer | ☐ Offen |
-| 4 | Personalisierung | Zentral bei CF Card Factory | ☐ Offen |
-| 5 | Key-Speicherung | AWS KMS Frankfurt | ☐ Offen |
-| 6 | Pilot-Scope | 2 Türen, 15 Karten, 6 Wochen | ☐ Offen |
-| 7 | Billing-Methode | High-Water-Mark + CSV-Export | ☐ Offen |
+| # | Entscheidung | Getroffene Entscheidung | Status |
+|---|--------------|-------------------------|--------|
+| 1 | Controller | Optional, nur I/O oder weglassen | ✅ Entschieden |
+| 2 | Reader | P1 = Transparent/Direct-Auth-Reader (Kauf nach Proof); P2 = HID Signo nach Verifikation | ✅ Entschieden |
+| 3 | Integrationsansatz | Gateway als einziger Decision Point | ✅ Entschieden |
+| 4 | Personalisierung | Zentral bei CF Card Factory, Standard DESFire EV3, keine Vendor-Credentials | ✅ Entschieden |
+| 5 | Key-Speicherung | VeryFlow-managed, AWS KMS oder GCP KMS (EU) | ✅ Entschieden |
+| 6 | Pilot-Scope | 2 Türen, 15 Karten, 1 Gateway, 6 Wochen, Offline 48h | ✅ Entschieden |
+| 7 | Billing-Methode | High-Water-Mark, CSV + JSON Export, keine Rechnungsstellung | ✅ Entschieden |
 
 ### Entscheidungs-Template
 
@@ -618,21 +687,32 @@ Für jede Entscheidung bitte dokumentieren:
 
 ---
 
-## Zusammenfassung der Empfehlungen
+## Zusammenfassung der getroffenen Entscheidungen
 
-| Bereich | Empfehlung | Konfidenz |
-|---------|------------|-----------|
-| Hardware | HID Signo 20 + Mercury Controller | Hoch |
-| Integration | Gateway als Logik-Layer (Option B) | Hoch |
-| Personalisierung | Zentral bei CF Card Factory | Hoch |
-| Key Management | AWS KMS, VeryFlow-managed | Hoch |
-| Pilot | 2 Türen, 15 Karten, 6 Wochen | Mittel |
-| Billing | High-Water-Mark, CSV-Export | Hoch |
+| Bereich | Entscheidung |
+|---------|--------------|
+| Hardware | Zwei Profile (P1 Transparent Pilot, P2 Enterprise nach Verifikation); Controller optional I/O |
+| Integration | Gateway einziger Decision Point; Controller nur I/O oder entfällt |
+| Personalisierung | Zentral bei CF Card Factory, Standard DESFire EV3, keine HID-SIO-Abhängigkeit |
+| Key Management | KMS-managed (AWS/GCP EU), Rotation manuell jährlich, Runbooks Pflicht |
+| Pilot | 2 Türen, 15 Karten, 1 Gateway, 6 Wochen, Offline-Test 48h |
+| Billing | High-Water-Mark, CSV + JSON Export, keine Rechnungsstellung im MVP |
+| TTL | Default **1 Stunde**; Sicherheitszaun für Offline, schnelle Wirksamkeit von Sperrungen |
+| Sync | Push bevorzugt, Fallback Polling 60s; sofortige Cache-Invalidierung bei Sperrung/Regeländerung |
+| Offline nach TTL | Minimalrechte-Profil (kein hartes Fail-Closed); Security-Events loggen |
+| Sofortsperre | Kernfeature: Sperre auf Karte/Person/Türgruppe/Standort, Push, UI mit Gateway-Status |
+| Auth | **Clerk** (MVP); WorkOS später; kein Keycloak |
 
-**Konfidenz-Legende:**
-- **Hoch:** Klare technische/wirtschaftliche Gründe, geringe Risiken
-- **Mittel:** Abhängig von Kundenfeedback, kann angepasst werden
-- **Niedrig:** Mehrere gleichwertige Optionen, braucht mehr Input
+---
+
+## Noch offen (nicht blockierend)
+
+Diese Punkte blockieren den Entwicklungsstart nicht:
+
+| Thema | Status |
+|-------|--------|
+| **Installer-Affiliate-Flow** | Explizit **nicht im MVP** bzw. **Phase 2**; kein Blocker. |
+| **Proof Layer / Hash Anchoring** | Als entschieden betrachtet (Event-Batch-Anker); Architekturplan bleibt maßgeblich. |
 
 ---
 
